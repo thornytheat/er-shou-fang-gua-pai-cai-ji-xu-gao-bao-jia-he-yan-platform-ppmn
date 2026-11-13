@@ -30,8 +30,10 @@ def fix_price(db: Session, listing_id: int, unit_price: int, note: str, principa
         ip=request.client.host if request.client else None,
     )
     db.commit()
-    # 单价变化会影响中位/MAD，立刻重算该批次的簇与价格工单
-    cluster_service.recompute(db)
+    # 单价变化会影响中位/MAD 与簇关系，立刻重算：依据变了的旧结论失效、另起一代
+    cluster_service.recompute(
+        db, actor_email=principal["email"], actor_role=principal["role"], trigger="price_fix"
+    )
     db.commit()
     return listing_service.get_listing(db, listing_id, principal["role"])
 

@@ -12,14 +12,21 @@ from src.utils.timeutil import iso_date
 
 
 def list_clusters(db: Session, duplicate_only: bool = True, limit: int = 60) -> dict:
-    query = select(ListingCluster)
+    query = select(ListingCluster).where(ListingCluster.status == "active")
     if duplicate_only:
         query = query.where(ListingCluster.member_count > 1)
     query = query.order_by(ListingCluster.member_count.desc(), ListingCluster.id.asc()).limit(limit)
     rows = db.scalars(query).all()
-    total = db.scalar(select(func.count()).select_from(ListingCluster)) or 0
+    total = (
+        db.scalar(select(func.count()).select_from(ListingCluster).where(ListingCluster.status == "active")) or 0
+    )
     duplicate_total = (
-        db.scalar(select(func.count()).select_from(ListingCluster).where(ListingCluster.member_count > 1)) or 0
+        db.scalar(
+            select(func.count())
+            .select_from(ListingCluster)
+            .where(ListingCluster.member_count > 1, ListingCluster.status == "active")
+        )
+        or 0
     )
     listing_map = {row.id: row for row in db.scalars(select(Listing)).all()}
     items = []
@@ -38,6 +45,7 @@ def list_clusters(db: Session, duplicate_only: bool = True, limit: int = 60) -> 
                 "min_similarity": cluster.min_similarity,
                 "max_similarity": cluster.max_similarity,
                 "spread_pct": cluster.spread_pct,
+                "generation": cluster.generation,
                 "primary_title": primary.title if primary else None,
                 "primary_list_date": iso_date(primary.list_date) if primary else None,
             }
@@ -50,8 +58,14 @@ def list_clusters(db: Session, duplicate_only: bool = True, limit: int = 60) -> 
     }
 
 
+def list_events(db: Session, limit: int = 20) -> dict:
+    return cluster_service.list_events(db, limit=limit)
+
+
 def recompute(db: Session, principal: dict, request: Request) -> dict:
-    result = cluster_service.recompute(db)
+    result = cluster_service.recompute(
+        db, actor_email=principal["email"], actor_role=principal["role"], trigger="recompute"
+    )
     audit_service.record(
         db,
         actor_email=principal["email"],
@@ -64,6 +78,8 @@ def recompute(db: Session, principal: dict, request: Request) -> dict:
             "duplicates": result["duplicate_count"],
             "dedup": result["dedup_count"],
             "flags": result["flag_total"],
+            "invalidated": result["flag_invalidated"],
+            "cluster_events": result["cluster_events"],
         },
         ip=request.client.host if request.client else None,
     )

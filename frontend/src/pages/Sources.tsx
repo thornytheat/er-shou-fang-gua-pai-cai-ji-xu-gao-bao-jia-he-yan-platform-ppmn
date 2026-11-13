@@ -385,6 +385,17 @@ export default function Sources() {
                       {activeRun.summary?.pair_count ?? 0} / {activeRun.summary?.edge_count ?? 0}
                     </div>
                   </div>
+                  <div>
+                    <div className="tiny muted">下架</div>
+                    <div className="mono">{activeRun.summary?.delisted?.length ?? 0} 条</div>
+                  </div>
+                  <div>
+                    <div className="tiny muted">结论失效 / 簇变迁</div>
+                    <div className="mono">
+                      {activeRun.summary?.flag_invalidated ?? 0} /{' '}
+                      {Object.values(activeRun.summary?.cluster_events ?? {}).reduce((sum, count) => sum + count, 0)}
+                    </div>
+                  </div>
                 </div>
 
                 {activeRun.summary?.throttle_log?.length ? (

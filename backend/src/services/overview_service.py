@@ -33,14 +33,23 @@ def worker_alive() -> bool:
 def overview(db: Session) -> dict:
     sources = db.scalar(select(func.count()).select_from(Source)) or 0
     enabled_sources = db.scalar(select(func.count()).select_from(Source).where(Source.enabled.is_(True))) or 0
-    listings = db.scalar(select(func.count()).select_from(Listing)) or 0
+    listings = (
+        db.scalar(select(func.count()).select_from(Listing).where(Listing.is_active.is_(True))) or 0
+    )
     primaries = db.scalar(select(func.count()).select_from(Listing).where(Listing.is_primary.is_(True))) or 0
     duplicate_clusters = (
-        db.scalar(select(func.count()).select_from(ListingCluster).where(ListingCluster.member_count > 1)) or 0
+        db.scalar(
+            select(func.count())
+            .select_from(ListingCluster)
+            .where(ListingCluster.member_count > 1, ListingCluster.status == "active")
+        )
+        or 0
     )
     duplicate_members = (
         db.scalar(
-            select(func.sum(ListingCluster.member_count)).where(ListingCluster.member_count > 1)
+            select(func.sum(ListingCluster.member_count)).where(
+                ListingCluster.member_count > 1, ListingCluster.status == "active"
+            )
         )
         or 0
     )

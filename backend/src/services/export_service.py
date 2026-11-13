@@ -1,4 +1,8 @@
-"""行情 CSV 导出：按「去重后的主房源」出行情明细，附价格标记与偏离度。"""
+"""行情 CSV 导出：按「去重后的主房源」出行情明细，附价格标记与偏离度。
+
+出口闸门：只取 valid_state=current 的工单——即与当前簇成员、当前判定
+一致的结论才能进入行情；失效（stale）的旧结论永远进不了导出。
+"""
 from __future__ import annotations
 
 import csv
@@ -8,7 +12,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.constants.enums import FLAG_TYPE_LABELS, REVIEW_LABELS
+from src.constants.enums import FLAG_TYPE_LABELS, REVIEW_LABELS, FlagValidState
 from src.models.block_stat import BlockStat
 from src.models.cluster import ListingCluster
 from src.models.listing import Listing
@@ -47,7 +51,7 @@ def rows_for_export(
     since: str | None = None,
     flag_only: bool = False,
 ) -> list[list]:
-    query = select(Listing).where(Listing.is_primary.is_(True))
+    query = select(Listing).where(Listing.is_primary.is_(True), Listing.is_active.is_(True))
     if community:
         query = query.where(Listing.community == community)
     if since:
@@ -57,8 +61,15 @@ def rows_for_export(
             raise AppError("VALIDATION", 422, detail=f"since={since}") from exc
     listings = db.scalars(query.order_by(Listing.community, Listing.layout, Listing.unit_price)).all()
     sources = {source.id: source for source in db.scalars(select(Source)).all()}
-    clusters = {cluster.id: cluster for cluster in db.scalars(select(ListingCluster)).all()}
-    flags = {flag.listing_id: flag for flag in db.scalars(select(PriceFlag)).all()}
+    clusters = {
+        cluster.id: cluster
+        for cluster in db.scalars(select(ListingCluster).where(ListingCluster.status == "active")).all()
+    }
+    # 出口闸门：只有与当前成员、当前判定一致（current）的结论才允许进入行情
+    flags = {
+        flag.listing_id: flag
+        for flag in db.scalars(select(PriceFlag).where(PriceFlag.valid_state == FlagValidState.CURRENT.value)).all()
+    }
     stats = {stat.block_key: stat for stat in db.scalars(select(BlockStat)).all()}
 
     rows: list[list] = []

@@ -95,6 +95,49 @@ REVIEW_LABELS: dict[str, str] = {
 }
 
 
+class FlagValidState(StrEnum):
+    """工单结论是否与当前簇成员 / 当前判定一致。"""
+
+    CURRENT = "current"
+    STALE = "stale"
+
+
+class InvalidationReason(StrEnum):
+    """旧结论失效原因：成员变 / 价格变 / 判定环境变 / 规则版本变 / 房源下架。"""
+
+    MEMBERS = "members_changed"
+    PRICE = "price_changed"
+    JUDGMENT = "judgment_changed"
+    RULE = "rule_changed"
+    DELISTED = "delisted"
+
+
+INVALIDATION_LABELS: dict[str, str] = {
+    InvalidationReason.MEMBERS.value: "簇成员变化",
+    InvalidationReason.PRICE.value: "价格变化",
+    InvalidationReason.JUDGMENT.value: "判定口径变化",
+    InvalidationReason.RULE.value: "判定规则版本变化",
+    InvalidationReason.DELISTED.value: "房源下架",
+}
+
+
+class ClusterEventKind(StrEnum):
+    """簇变迁：拆簇 / 并簇 / 成员变更 / 解散。"""
+
+    SPLIT = "split"
+    MERGE = "merge"
+    REFORM = "reform"
+    DISSOLVED = "dissolved"
+
+
+CLUSTER_EVENT_LABELS: dict[str, str] = {
+    ClusterEventKind.SPLIT.value: "拆簇",
+    ClusterEventKind.MERGE.value: "并簇",
+    ClusterEventKind.REFORM.value: "簇成员变更",
+    ClusterEventKind.DISSOLVED.value: "簇解散",
+}
+
+
 class TriggerKind(StrEnum):
     MANUAL = "manual"
     SCHEDULE = "schedule"

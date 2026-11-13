@@ -11,6 +11,7 @@ from src.models.audit import AuditLog  # noqa: E402
 from src.models.source import Source  # noqa: E402
 from src.models.listing import Listing  # noqa: E402
 from src.models.cluster import ListingCluster  # noqa: E402
+from src.models.cluster_event import ClusterEvent  # noqa: E402
 from src.models.price_flag import PriceFlag  # noqa: E402
 from src.models.ingest_run import IngestRun  # noqa: E402
 from src.models.block_stat import BlockStat  # noqa: E402
@@ -22,6 +23,7 @@ __all__ = [
     "Source",
     "Listing",
     "ListingCluster",
+    "ClusterEvent",
     "PriceFlag",
     "IngestRun",
     "BlockStat",

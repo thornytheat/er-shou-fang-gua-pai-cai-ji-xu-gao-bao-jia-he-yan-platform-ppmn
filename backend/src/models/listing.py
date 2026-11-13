@@ -48,6 +48,9 @@ class Listing(Base):
     completeness: Mapped[float] = mapped_column(Float, default=1.0)
     cluster_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 下架软标记：补采时源上消失的挂牌置 is_active=False，不再进簇与行情，但保留可追查
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     raw: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

@@ -57,6 +57,9 @@ export interface IngestRun {
     unknown_area?: number;
     edge_count?: number;
     pair_count?: number;
+    delisted?: number[];
+    flag_invalidated?: number;
+    cluster_events?: Record<string, number>;
   };
 }
 
@@ -96,6 +99,7 @@ export interface ListingRow {
   cluster_size: number;
   platform_count: number;
   is_primary: boolean;
+  is_active: boolean;
   flag_type: string | null;
   flag_label: string | null;
   deviation_pct: number | null;
@@ -165,8 +169,20 @@ export interface ListingDetail {
     review_note: string | null;
     reviewed_by: string | null;
     reviewed_at: string | null;
+    generation?: number;
+    rule_version?: string | null;
+    basis_members?: BasisMember[];
   } | null;
   price_series: PriceSeriesPoint[];
+}
+
+export interface BasisMember {
+  listing_id: number;
+  source_name: string | null;
+  platform: string | null;
+  source_listing_no: string | null;
+  unit_price: number | null;
+  is_primary: boolean;
 }
 
 export interface PriceFlagRow {
@@ -189,10 +205,42 @@ export interface PriceFlagRow {
   reviewed_by: string | null;
   reviewed_at: string | null;
   detected_at: string | null;
+  valid_state: string;
+  generation: number;
+  rule_version: string | null;
+  basis_members: BasisMember[];
+  invalidation_reason: string | null;
+  invalidated_at: string | null;
+  superseded_by: number | null;
   title: string | null;
   area_sqm: number | null;
   list_date: string | null;
   source_name: string | null;
+}
+
+export interface InvalidatedFlagRow extends PriceFlagRow {
+  invalidation_label: string;
+}
+
+export interface ClusterSnapshot {
+  cluster_id: number | null;
+  primary_listing_id: number | null;
+  member_ids: number[];
+  member_count: number;
+  members: BasisMember[];
+}
+
+export interface ClusterEventRow {
+  id: number;
+  event_kind: string;
+  kind_label: string;
+  trigger_kind: string;
+  actor_email: string;
+  block_key: string;
+  before_clusters: ClusterSnapshot[];
+  after_clusters: ClusterSnapshot[];
+  listing_ids: number[];
+  created_at: string | null;
 }
 
 export interface FlagPage {
@@ -205,6 +253,7 @@ export interface FlagCounts {
   total: number;
   by_type: Record<string, number>;
   by_status: Record<string, number>;
+  invalidated?: number;
 }
 
 export interface Overview {
@@ -233,6 +282,7 @@ export interface ClusterRow {
   min_similarity: number | null;
   max_similarity: number | null;
   spread_pct: number | null;
+  generation?: number;
   primary_title: string | null;
   primary_list_date: string | null;
 }

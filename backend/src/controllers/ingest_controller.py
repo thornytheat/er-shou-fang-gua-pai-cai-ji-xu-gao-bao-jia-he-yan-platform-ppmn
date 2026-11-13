@@ -28,6 +28,7 @@ def run_ingest(db: Session, source_ids: list[int] | None, trigger: str, principa
         db,
         trigger=kind,
         operator_email=principal["email"],
+        operator_role=principal["role"],
         source_ids=source_ids,
     )
     audit_service.record(

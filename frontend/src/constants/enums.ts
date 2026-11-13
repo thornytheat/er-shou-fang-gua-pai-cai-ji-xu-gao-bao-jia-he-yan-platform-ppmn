@@ -34,6 +34,21 @@ export const REVIEW_LABELS: Record<string, string> = {
   dismissed: '已驳回',
 };
 
+export const INVALIDATION_LABELS: Record<string, string> = {
+  members_changed: '簇成员变化',
+  price_changed: '价格变化',
+  judgment_changed: '判定口径变化',
+  rule_changed: '判定规则版本变化',
+  delisted: '房源下架',
+};
+
+export const CLUSTER_EVENT_LABELS: Record<string, string> = {
+  split: '拆簇',
+  merge: '并簇',
+  reform: '簇成员变更',
+  dissolved: '簇解散',
+};
+
 export const INGEST_STATUS_LABELS: Record<string, string> = {
   running: '运行中',
   success: '成功',

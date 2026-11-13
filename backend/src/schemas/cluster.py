@@ -15,6 +15,7 @@ class ClusterRow(BaseModel):
     min_similarity: float | None = None
     max_similarity: float | None = None
     spread_pct: float | None = None
+    generation: int = 1
     primary_title: str | None = None
 
 

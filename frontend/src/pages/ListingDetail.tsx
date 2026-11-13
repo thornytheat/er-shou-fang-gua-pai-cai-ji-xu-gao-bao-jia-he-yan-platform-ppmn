@@ -94,6 +94,7 @@ export default function ListingDetail() {
         <span className="plate">房源 #{listing.id}</span>
         <span className="plate">{listing.source_listing_no}</span>
         {listing.cluster_size > 1 ? <StampTag kind="dup" label={`同簇 ${listing.cluster_size} 条 / ${listing.platform_count} 个平台`} /> : null}
+        {!listing.is_active ? <StampTag kind="dismissed" label="已下架" title="本轮补采时源上已消失，不再进簇与行情" /> : null}
       </div>
 
       <div className="panel">
@@ -277,6 +278,14 @@ export default function ListingDetail() {
                     </div>
                   </div>
                   {flag.review_note ? <div className="tiny muted">复核备注：{flag.review_note}</div> : null}
+                  {flag.basis_members && flag.basis_members.length > 0 ? (
+                    <div className="tiny muted">
+                      结论依据（第 {flag.generation} 代{flag.rule_version ? ` · 规则 ${flag.rule_version}` : ''}）：
+                      {flag.basis_members
+                        .map((member) => `${member.source_name || '未知来源'} ${member.unit_price ? yuan(member.unit_price) : '—'}`)
+                        .join(' / ')}
+                    </div>
+                  ) : null}
                   {canReview ? (
                     <>
                       <label className="field">

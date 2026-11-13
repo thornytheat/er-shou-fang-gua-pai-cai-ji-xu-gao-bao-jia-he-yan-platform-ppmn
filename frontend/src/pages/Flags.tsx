@@ -1,12 +1,13 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { flagsApi } from '../api/flags';
+import { clustersApi } from '../api/clusters';
 import { exportsApi } from '../api/exports';
 import { useToast } from '../hooks/useToast';
 import { authStore } from '../stores/authStore';
 import { flagsStore } from '../stores/flagsStore';
 import { can } from '../constants/roles';
-import { FLAG_TYPE_LABELS, FLAG_TYPE_ORDER, REVIEW_LABELS } from '../constants/enums';
+import { CLUSTER_EVENT_LABELS, FLAG_TYPE_LABELS, FLAG_TYPE_ORDER, INVALIDATION_LABELS, REVIEW_LABELS } from '../constants/enums';
 import { confidence, dateText, pct, shortDate, yuan } from '../utils/format';
 import { errorMessage } from '../utils/errorMessage';
 import EmptyState from '../components/common/EmptyState';
@@ -14,7 +15,7 @@ import ErrorState from '../components/common/ErrorState';
 import LedgerTable from '../components/common/LedgerTable';
 import MetricStrip from '../components/common/MetricStrip';
 import StampTag from '../components/common/StampTag';
-import type { PriceFlagRow } from '../types/models';
+import type { ClusterEventRow, InvalidatedFlagRow, PriceFlagRow } from '../types/models';
 
 const DEFAULT_NOTES: Record<string, string> = {
   high: '已电话核实：业主试探价，按去重后中位价入周报',
@@ -39,6 +40,19 @@ export default function Flags() {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState('');
   const [preview, setPreview] = useState<number | null>(null);
+  const [history, setHistory] = useState<InvalidatedFlagRow[]>([]);
+  const [events, setEvents] = useState<ClusterEventRow[]>([]);
+
+  async function loadLineage() {
+    try {
+      const [invalidated, clusterEvents] = await Promise.all([flagsApi.history(12), clustersApi.events(12)]);
+      setHistory(invalidated.items);
+      setEvents(clusterEvents.items);
+    } catch {
+      setHistory([]);
+      setEvents([]);
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -65,6 +79,7 @@ export default function Flags() {
       .preview({})
       .then((data) => setPreview(data.total_rows))
       .catch(() => setPreview(null));
+    loadLineage();
   }, []);
 
   async function review(flag: PriceFlagRow, status: 'confirmed' | 'dismissed') {
@@ -75,6 +90,7 @@ export default function Flags() {
       toast.ok(status === 'confirmed' ? '工单已确认，进入本周行情口径' : '工单已驳回，保留原始挂牌价');
       setSelected({ ...flag, ...updated });
       await load();
+      await loadLineage();
     } catch (err) {
       toast.error(errorMessage((err as { payload?: unknown }).payload, '复核失败'));
     } finally {
@@ -86,8 +102,13 @@ export default function Flags() {
     setBusy('detect');
     try {
       const result = await flagsApi.detect();
-      toast.ok(`核验重跑完成：虚高 ${result.counts.by_type.high} / 虚低 ${result.counts.by_type.low} / 待确认 ${result.counts.by_type.uncertain}`);
+      const invalidated = Number((result.result as { flag_invalidated?: number }).flag_invalidated || 0);
+      toast.ok(
+        `核验重跑完成：虚高 ${result.counts.by_type.high} / 虚低 ${result.counts.by_type.low} / 待确认 ${result.counts.by_type.uncertain}` +
+          (invalidated ? `，${invalidated} 条旧结论已失效重算` : ''),
+      );
       await load();
+      await loadLineage();
     } catch (err) {
       toast.error(errorMessage((err as { payload?: unknown }).payload, '重跑失败'));
     } finally {
@@ -113,7 +134,8 @@ export default function Flags() {
     { k: '虚低', v: counts?.by_type.low ?? '—', unit: '件', d: '引流价 / 钓鱼价' },
     { k: '待确认', v: counts?.by_type.uncertain ?? '—', unit: '件', d: '偏离落在 25%~30% 边界带' },
     { k: '待复核', v: counts?.by_status.pending ?? '—', unit: '件', d: `已确认 ${counts?.by_status.confirmed ?? 0} / 已驳回 ${counts?.by_status.dismissed ?? 0}` },
-    { k: '可导出行数', v: preview ?? '—', unit: '行', d: '去重后主房源口径' },
+    { k: '失效结论', v: counts?.invalidated ?? '—', unit: '件', d: '成员/价格/规则变化后重算' },
+    { k: '可导出行数', v: preview ?? '—', unit: '行', d: '只含当前有效结论' },
   ];
 
   const columns = [
@@ -317,6 +339,23 @@ export default function Flags() {
                   来源 {selected.source_name || '—'} · 检出 {dateText(selected.detected_at)}
                   {selected.reviewed_by ? ` · 复核人 ${selected.reviewed_by}` : ''}
                 </div>
+                <div className="note-pin">
+                  <div className="eyebrow" style={{ marginBottom: 4 }}>
+                    结论依据 · 第 {selected.generation} 代{selected.rule_version ? ` · 规则 ${selected.rule_version}` : ''}
+                  </div>
+                  {(selected.basis_members || []).map((member) => (
+                    <div className="row spread tiny" key={member.listing_id}>
+                      <span>
+                        {member.source_name || '未知来源'} · {member.source_listing_no}
+                        {member.is_primary ? '（主房源）' : ''}
+                      </span>
+                      <span className="mono">{member.unit_price ? `${yuan(member.unit_price)} 元/㎡` : '—'}</span>
+                    </div>
+                  ))}
+                  <div className="tiny muted" style={{ marginTop: 4 }}>
+                    中位 {yuan(selected.median_price)} 元/㎡ · 样本 {selected.sample_size} 套 · 依据与当前一致才会留在队列与行情里
+                  </div>
+                </div>
                 {selected.review_note ? <div className="note-pin">{selected.review_note}</div> : null}
 
                 {canReview ? (
@@ -361,6 +400,89 @@ export default function Flags() {
             <div className="eyebrow" style={{ marginBottom: 4 }}>判定口径</div>
             样本 ≥ 8 套才判定；<b>z = 0.6745 × (单价 − 中位) / MAD</b>，|z| &gt; 3 且偏离 &gt; 30% 判虚高/虚低；
             偏离落在 25%~30% 的边界样本进「待确认」，必须人工看。
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="panel">
+          <div className="panel-head">
+            <h2>失效结论</h2>
+            <span className="tiny muted">旧结论留底，不进入行情导出</span>
+          </div>
+          <div className="panel-body stack" style={{ gap: 8 }}>
+            {history.length === 0 ? (
+              <EmptyState
+                title="还没有失效结论"
+                hint="补采、改价或下架让簇成员 / 判定依据变化后，旧的人工结论会在这里留底，并另起一代工单重算。"
+              />
+            ) : (
+              history.map((item) => (
+                <div className="note-pin" key={item.id}>
+                  <div className="row spread">
+                    <span>
+                      <StampTag kind={item.flag_type} />{' '}
+                      <b>
+                        {item.community} · {item.layout}
+                      </b>{' '}
+                      <span className="tiny muted">第 {item.generation} 代 · 工单 #{item.id}</span>
+                    </span>
+                    <span className="stamp dismissed">{INVALIDATION_LABELS[item.invalidation_reason || ''] || '已失效'}</span>
+                  </div>
+                  <div className="tiny muted" style={{ marginTop: 4 }}>
+                    失效前：{REVIEW_LABELS[item.review_status]}
+                    {item.reviewed_by ? ` · ${item.reviewed_by}` : ''} · {dateText(item.invalidated_at)}
+                    {item.superseded_by ? ` · 新一代工单 #${item.superseded_by}` : ' · 不再判定'}
+                  </div>
+                  <div className="tiny muted" style={{ marginTop: 2 }}>
+                    当时依据：{(item.basis_members || [])
+                      .map((member) => `${member.source_name || '未知来源'} ${member.unit_price ? yuan(member.unit_price) : '—'}`)
+                      .join(' / ') || '—'}
+                    {item.rule_version ? ` · 规则 ${item.rule_version}` : ''}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-head">
+            <h2>簇变迁</h2>
+            <span className="tiny muted">拆簇 / 并簇 / 成员变更的前后留底</span>
+          </div>
+          <div className="panel-body stack" style={{ gap: 8 }}>
+            {events.length === 0 ? (
+              <EmptyState
+                title="还没有簇变迁"
+                hint="重复挂牌拆开、分开的并到一组时，这里会记录变化前后的成员与价格。"
+              />
+            ) : (
+              events.map((event) => {
+                const beforeCount = event.before_clusters.reduce((sum, cluster) => sum + cluster.member_count, 0);
+                const afterCount = event.after_clusters.reduce((sum, cluster) => sum + cluster.member_count, 0);
+                return (
+                  <div className="note-pin" key={event.id}>
+                    <div className="row spread">
+                      <span>
+                        <span className="stamp pending">{CLUSTER_EVENT_LABELS[event.event_kind] || event.event_kind}</span>{' '}
+                        <b>{event.block_key.replace('::', ' · ')}</b>
+                      </span>
+                      <span className="tiny muted">{dateText(event.created_at)}</span>
+                    </div>
+                    <div className="tiny muted" style={{ marginTop: 4 }}>
+                      {event.before_clusters.length} 簇 {beforeCount} 条 → {event.after_clusters.length} 簇 {afterCount} 条
+                      {' · '}触发 {event.trigger_kind} · {event.actor_email}
+                    </div>
+                    <div className="tiny muted" style={{ marginTop: 2 }}>
+                      {(event.after_clusters[0]?.members || event.before_clusters[0]?.members || [])
+                        .map((member) => `${member.source_name || '未知来源'} ${member.unit_price ? yuan(member.unit_price) : '—'}`)
+                        .join(' / ') || '—'}
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       </div>

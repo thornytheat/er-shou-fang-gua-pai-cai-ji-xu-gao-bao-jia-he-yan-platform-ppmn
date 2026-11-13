@@ -22,6 +22,16 @@ def list_clusters(
     return cluster_controller.list_clusters(db, duplicate_only=duplicate_only, limit=limit)
 
 
+@router.get("/events")
+def events(
+    limit: int = 20,
+    principal: dict = Depends(require_roles(*READ_ROLES)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """簇变迁时间线：拆簇 / 并簇 / 成员变更 / 解散，含变化前后的成员与价格。"""
+    return cluster_controller.list_events(db, limit=limit)
+
+
 @router.post("/recompute")
 def recompute(
     request: Request,

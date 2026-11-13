@@ -11,6 +11,10 @@ def list_flags(db: Session, **filters) -> dict:
     return flag_service.list_flags(db, **filters)
 
 
+def list_invalidated(db: Session, limit: int = 20) -> dict:
+    return flag_service.list_invalidated(db, limit=limit)
+
+
 def review(db: Session, flag_id: int, review_status: str, note: str | None, principal: dict, request: Request) -> dict:
     flag = flag_service.review(db, flag_id, review_status, note, principal["email"])
     audit_service.record(
@@ -25,6 +29,7 @@ def review(db: Session, flag_id: int, review_status: str, note: str | None, prin
             "review_status": review_status,
             "deviation_pct": flag.deviation_pct,
             "z": flag.z_score,
+            "generation": flag.generation,
             "note": note,
         },
         ip=request.client.host if request.client else None,
@@ -38,7 +43,9 @@ def review(db: Session, flag_id: int, review_status: str, note: str | None, prin
 
 
 def detect(db: Session, principal: dict, request: Request) -> dict:
-    result = cluster_service.recompute(db)
+    result = cluster_service.recompute(
+        db, actor_email=principal["email"], actor_role=principal["role"], trigger="detect"
+    )
     audit_service.record(
         db,
         actor_email=principal["email"],
@@ -46,7 +53,11 @@ def detect(db: Session, principal: dict, request: Request) -> dict:
         action="flag.detect",
         entity="price_flag",
         entity_id=None,
-        detail=result["flag_counts"],
+        detail={
+            **result["flag_counts"],
+            "invalidated": result["flag_invalidated"],
+            "cluster_events": result["cluster_events"],
+        },
         ip=request.client.host if request.client else None,
     )
     db.commit()

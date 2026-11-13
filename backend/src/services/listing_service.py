@@ -4,7 +4,7 @@ from __future__ import annotations
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from src.constants.enums import FLAG_TYPE_LABELS, REVIEW_LABELS, ReviewStatus
+from src.constants.enums import FLAG_TYPE_LABELS, REVIEW_LABELS, FlagValidState, ReviewStatus
 from src.constants.roles import can_see_contact
 from src.models.block_stat import BlockStat
 from src.models.cluster import ListingCluster
@@ -19,11 +19,18 @@ SORT_FIELDS = {"unit_price", "total_price_wan", "list_date", "area_sqm", "id"}
 
 
 def _flag_map(db: Session) -> dict[int, PriceFlag]:
-    return {flag.listing_id: flag for flag in db.scalars(select(PriceFlag)).all()}
+    """挂牌 -> 当前代工单（失效旧结论不出现在挂牌池与详情页）。"""
+    return {
+        flag.listing_id: flag
+        for flag in db.scalars(select(PriceFlag).where(PriceFlag.valid_state == FlagValidState.CURRENT.value)).all()
+    }
 
 
 def _cluster_map(db: Session) -> dict[int, ListingCluster]:
-    return {cluster.id: cluster for cluster in db.scalars(select(ListingCluster)).all()}
+    return {
+        cluster.id: cluster
+        for cluster in db.scalars(select(ListingCluster).where(ListingCluster.status == "active")).all()
+    }
 
 
 def _source_map(db: Session) -> dict[int, Source]:
@@ -62,6 +69,7 @@ def serialize_row(
         "cluster_size": cluster.member_count if cluster else 1,
         "platform_count": cluster.platform_count if cluster else 1,
         "is_primary": bool(listing.is_primary),
+        "is_active": bool(listing.is_active),
         "flag_type": flag_type,
         "flag_label": FLAG_TYPE_LABELS.get(flag_type) if flag_type else None,
         "deviation_pct": flag.deviation_pct if flag else None,
@@ -80,12 +88,16 @@ def list_listings(
     flag_type: str | None = None,
     duplicate_only: bool = False,
     primary_only: bool = False,
+    include_inactive: bool = False,
     sort: str = "unit_price",
     order: str = "desc",
     page: int = 1,
     page_size: int = 24,
 ) -> dict:
     query = select(Listing)
+    if not include_inactive:
+        # 已下架挂牌默认不进挂牌池（保留在库里供追查，详情页按 id 仍可打开）
+        query = query.where(Listing.is_active.is_(True))
     if q:
         pattern = f"%{q.strip()}%"
         query = query.where(or_(Listing.title.like(pattern), Listing.community.like(pattern)))
@@ -98,10 +110,15 @@ def list_listings(
     if primary_only:
         query = query.where(Listing.is_primary.is_(True))
     if duplicate_only:
-        subquery = select(ListingCluster.id).where(ListingCluster.member_count > 1)
+        subquery = select(ListingCluster.id).where(
+            ListingCluster.member_count > 1, ListingCluster.status == "active"
+        )
         query = query.where(Listing.cluster_id.in_(subquery))
     if flag_type:
-        subquery = select(PriceFlag.listing_id).where(PriceFlag.flag_type == flag_type)
+        subquery = select(PriceFlag.listing_id).where(
+            PriceFlag.flag_type == flag_type,
+            PriceFlag.valid_state == FlagValidState.CURRENT.value,
+        )
         query = query.where(Listing.id.in_(subquery))
 
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
@@ -212,6 +229,9 @@ def get_listing(db: Session, listing_id: int, role: str) -> dict:
             "review_note": flag.review_note,
             "reviewed_by": flag.reviewed_by,
             "reviewed_at": iso_utc(flag.reviewed_at),
+            "generation": flag.generation,
+            "rule_version": (flag.basis_snapshot or {}).get("rule_version"),
+            "basis_members": (flag.basis_snapshot or {}).get("members", []),
         }
         if flag
         else None
@@ -258,6 +278,11 @@ def filter_options(db: Session) -> dict:
         "layouts": layouts,
         "sources": [{"id": source.id, "name": source.name, "platform": source.platform} for source in sources],
         "pending_reviews": len(
-            db.scalars(select(PriceFlag.id).where(PriceFlag.review_status == ReviewStatus.PENDING.value)).all()
+            db.scalars(
+                select(PriceFlag.id).where(
+                    PriceFlag.review_status == ReviewStatus.PENDING.value,
+                    PriceFlag.valid_state == FlagValidState.CURRENT.value,
+                )
+            ).all()
         ),
     }

@@ -22,10 +22,10 @@
 4. **08:33** 均价刷新：`兰亭苑 三居` 去重前 **61,200 元/㎡**（42 条含重复）→ 去重后 **58,900 元/㎡**（28 套主房源）。
 5. **08:34** 稳健 z：8 个小区×户型分组各 ≥8 套，`阳光里 两居` 一套 79,072 元/㎡ 的钓鱼价偏离中位 **41.2%**、**z=4.31**，判 `high`；整批产出 **12 个工单（7 高 / 3 低 / 2 待确认）**。
 6. **09:10** 数据专员在核验队列确认 3 个虚高、驳回 1 个引流价，备注写进审计。
-7. **09:20** 门店回价：把 `兰亭苑 三居` 一套 65,686 元/㎡ 修正为 63,900，触发该批次中位/MAD 与工单重算。
-8. **09:30** 研究组长导出行情 CSV（194 行，含簇成员数、跨平台数、偏离、z、复核态），发周报。
+7. **09:20** 门店回价：把 `兰亭苑 三居` 一套 65,686 元/㎡ 修正为 63,900，触发该批次中位/MAD 与工单重算；**依据变了的已确认结论自动失效留底，另起一代 pending 工单重新复核**。
+8. **09:30** 研究组长导出行情 CSV（194 行，含簇成员数、跨平台数、偏离、z、复核态），**只有与当前簇成员、当前判定一致的结论才进导出**，发周报。
 9. **10:00** 组长在「采集源与运行」把门店群公告的节奏从 hourly 改成 twice_daily，写审计。
-10. **周复盘** 打开审计日志核对「谁改了什么价、谁确认了哪个虚高」。
+10. **周复盘** 打开审计日志核对「谁改了什么价、谁确认了哪个虚高、哪条结论因拆簇失效」。
 
 ---
 
@@ -34,11 +34,12 @@
 | 模块 | 页面 | 关键能力 |
 |---|---|---|
 | 登录 / 鉴权 | `/login` | JWT + 三角色；密码 `Demo@2026`；低权角色调高权接口真实 403 |
-| 采集运行 | `/sources` | 5 个源分页抓取、429 指数退避、逐源结果、运行记录、只重算去重 |
-| 挂牌池 | `/listings` | 重复标记、单价排序、小区/户型/来源/标记筛选、去重后口径切换、分页 |
-| 房源详情 | `/listings/:id` | 多平台并排对比 + 簇内相似度 + 价格序列 SVG + 小区×户型 均价口径（去重前/后） |
-| 核验队列 | `/flags` | 虚高/虚低/待确认分栏、偏离条、稳健 z、置信度、一键确认/驳回、导出 |
-| 行情导出 | `/flags`、API | `GET /api/exports/market.csv`，去重后主房源口径，194 行 |
+| 采集运行 | `/sources` | 5 个源分页抓取、429 指数退避、逐源结果、运行记录、只重算去重、下架软标记 |
+| 挂牌池 | `/listings` | 重复标记、单价排序、小区/户型/来源/标记筛选、去重后口径切换、分页（已下架默认不进池） |
+| 房源详情 | `/listings/:id` | 多平台并排对比 + 簇内相似度 + 价格序列 SVG + 小区×户型 均价口径（去重前/后）+ 结论依据 |
+| 核验队列 | `/flags` | 虚高/虚低/待确认分栏、偏离条、稳健 z、置信度、一键确认/驳回、**结论依据快照（平台×价格×规则版本）**、导出 |
+| 结论血缘 | `/flags` 下半页 | **失效结论留底**（失效原因/原复核人/当时依据）+ **簇变迁时间线**（拆簇/并簇/成员变更的前后成员与价格） |
+| 行情导出 | `/flags`、API | `GET /api/exports/market.csv`，去重后主房源口径，**只含与当前成员及当前判定一致的结论**，194 行 |
 
 ### 两个真算算法（全部在 Python 后端，前端不含任何硬编码结果）
 
@@ -58,6 +59,15 @@
 - `|z| > 3` **且** `|偏离中位| > 30%` → `high` / `low`；`25% < |偏离| ≤ 30%` → `uncertain`（边界样本进人工）。
 - 置信度 = `0.40×样本量分 + 0.35×|z|分 + 0.25×字段完整度`（样本 40 套、|z|=6 为满分）。
 - 可复现：分组样本来自确定性 fixture（`backend/fixtures/platforms.json`），同输入同输出，无随机数。
+
+**机制 3 · 复核结论血缘**（`backend/src/services/lineage_service.py` + `backend/src/services/cluster_service.py`）
+
+补采、改价或房源下架会让原本合并的重复挂牌拆开、原本分开的并到一组。复核结论随房源关系重新校验：
+
+1. **簇身份 = 成员集合**：`member_hash = sha256(排序后的成员 listing_id)`。重算时成员不变的簇延续原行；成员变了的旧簇置 `superseded` 留底、新簇 `generation+1`，拆簇 / 并簇 / 成员变更 / 解散写入 `cluster_events`（含变化前后的成员、平台与价格）。
+2. **结论依据 = basis_hash**：规则版本（全部阈值常量的指纹，规则一改全失效）+ 目标单价 + 簇成员及其价格 + 中位/MAD/样本量。重算后依据不变的工单保留人工复核态；**依据变了的旧工单连人工结论一起置 `stale`，另起一代 pending 工单重新复核——旧结论不串到新的房源身份上**。
+3. **失效原因可追查**：`members_changed`（拆/并簇）/ `price_changed`（改价，含簇成员改价）/ `judgment_changed`（中位/样本等判定环境变化）/ `rule_changed`（规则版本变化）/ `delisted`（下架）；旧工单的复核人、复核态、依据快照全部留底（`GET /api/flags/history`）。
+4. **出口闸门**：行情导出、挂牌池、详情页只取 `valid_state=current` 的工单；失效工单禁止复核（409）；下架挂牌软标记 `is_active=false`，不进簇、不进均价、不进行情，但保留可追查。
 
 ---
 
@@ -136,9 +146,9 @@ gb-577/
 │   └── src/
 │       ├── config/               # settings / database / celery_app / app
 │       ├── constants/            # enums / roles / limits（算法阈值）/ error_codes / log_templates
-│       ├── models/               # user audit source listing cluster price_flag ingest_run block_stat
+│       ├── models/               # user audit source listing cluster cluster_event price_flag ingest_run block_stat
 │       ├── schemas/              # auth source listing cluster price_flag ingest common
-│       ├── services/             # fetch parsers fingerprint price cluster ingest listing source flag export audit overview
+│       ├── services/             # fetch parsers fingerprint price cluster lineage ingest listing source flag export audit overview
 │       ├── controllers/          # auth source listing cluster flag ingest export overview
 │       ├── routes/               # health auth overview sources listings clusters flags ingest_runs exports audit
 │       └── middlewares/          # auth / audit_logger / rate_limit / error_handler / rbac
@@ -195,6 +205,9 @@ gb-577/
 | `Role`（admin/analyst/client） | `backend/src/constants/enums.py` | `constants/roles.py`（权限表）、`middlewares/rbac.py`、`models/user.py`、`routes/*` | `frontend/src/constants/enums.ts` | `constants/roles.ts`、`router/guards.tsx`、`components/layout/AppShell.tsx`、`pages/*` |
 | `FlagType`（high/low/uncertain） | 同上 | `services/price_service.py`、`services/cluster_service.py`、`services/flag_service.py`、`schemas/price_flag.py` | 同上 + `FLAG_TYPE_LABELS` | `pages/Flags.tsx`、`pages/Listings.tsx`、`pages/ListingDetail.tsx`、`components/common/StampTag.tsx` |
 | `ReviewStatus`（pending/confirmed/dismissed） | 同上 | `services/flag_service.py`、`services/cluster_service.py`、`services/export_service.py` | 同上 + `REVIEW_LABELS` | `pages/Flags.tsx`、`pages/ListingDetail.tsx` |
+| `FlagValidState`（current/stale） | 同上 | `services/cluster_service.py`、`services/flag_service.py`、`services/export_service.py`、`services/listing_service.py` | （仅经 API 字段透出） | `pages/Flags.tsx`（失效结论面板） |
+| `InvalidationReason`（members/price/judgment/rule/delisted） | 同上 + `INVALIDATION_LABELS` | `services/lineage_service.py`、`services/cluster_service.py`、`services/flag_service.py` | 同上 + `INVALIDATION_LABELS` | `pages/Flags.tsx` |
+| `ClusterEventKind`（split/merge/reform/dissolved） | 同上 + `CLUSTER_EVENT_LABELS` | `services/cluster_service.py` | 同上 + `CLUSTER_EVENT_LABELS` | `pages/Flags.tsx` |
 | `IngestStatus`（running/success/partial/failed） | 同上 | `services/ingest_service.py`、`models/ingest_run.py`、`scripts/seed_demo.py` | 同上 + `INGEST_STATUS_LABELS` | `pages/Sources.tsx` |
 | `PlatformKind`（aggregator/portal/forum/moments/notice） | 同上 | `services/parsers.py`、`services/source_service.py`、`fixtures/sources.json` | 同上 + `PLATFORM_LABELS` | `pages/Sources.tsx` |
 | `Layout` / `FloorBand` | 同上 | `services/parsers.py`、`utils/similarity.py` | 同上 | `pages/Listings.tsx`、`pages/ListingDetail.tsx` |

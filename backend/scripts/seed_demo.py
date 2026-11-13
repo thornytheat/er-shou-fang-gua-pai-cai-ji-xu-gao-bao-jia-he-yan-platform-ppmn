@@ -4,8 +4,8 @@
   users.email
   sources.code
   listings(source_id, source_listing_no)
-  listing_clusters.primary_listing_id     （由 cluster_service.recompute 维护）
-  price_flags.listing_id                  （同上，保留人工复核态）
+  listing_clusters.member_hash           （由 cluster_service.recompute 分代维护）
+  price_flags(listing_id, valid_state)   （同上；依据变化即失效重算，不覆盖人工结论）
   ingest_runs.seed_key
   audit_logs.seed_key
 
@@ -103,6 +103,8 @@ def ensure_listings(db) -> tuple[int, int]:
                 created += 1
             else:
                 updated += 1
+            listing.is_active = True
+            listing.removed_at = None
             listing.community = row["community"]
             listing.layout = row["layout"]
             listing.area_sqm = row.get("area_sqm")
@@ -179,7 +181,7 @@ def seed_all() -> str:
         user_count = ensure_users(db)
         ensure_sources(db)
         ensure_listings(db)
-        cluster_service.recompute(db)
+        cluster_service.recompute(db, actor_email="seed@rentlens.io", trigger="seed")
         ensure_history_runs(db)
         ensure_seed_audit(db)
 

@@ -1,7 +1,8 @@
-"""采集编排：源 → 页面 → 解析 → 落库 → 去重 → 均价刷新 → 价格核验。
+"""采集编排：源 → 页面 → 解析 → 落库 → 下架检测 → 去重 → 均价刷新 → 价格核验。
 
-一次运行的副作用全部幂等：挂牌按 (source_id, source_listing_no) upsert，
-去重簇按主房源 id upsert，价格工单按 listing_id upsert 且保留人工复核态。
+一次运行的副作用全部幂等：挂牌按 (source_id, source_listing_no) upsert；
+本轮未再出现的挂牌置为下架（is_active=False，保留可追查）；去重簇按
+成员集合哈希分代，价格工单依据变化即失效重算（见 cluster_service.recompute）。
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from src.models.ingest_run import IngestRun
 from src.models.listing import Listing
 from src.models.price_flag import PriceFlag
 from src.models.source import Source
-from src.services import cluster_service, fetch_service
+from src.services import audit_service, cluster_service, fetch_service
 from src.utils.errors import AppError
 from src.utils.logger import get_logger
 from src.utils.timeutil import iso_utc, utcnow
@@ -64,6 +65,9 @@ def _upsert_listings(db: Session, rows: list[dict], sources: dict[str, Source]) 
             created += 1
         else:
             updated += 1
+        # 重新出现的挂牌自动复活（上一轮可能被标了下架）
+        listing.is_active = True
+        listing.removed_at = None
         listing.community = row["community"]
         listing.layout = row["layout"]
         listing.area_sqm = row.get("area_sqm")
@@ -80,6 +84,50 @@ def _upsert_listings(db: Session, rows: list[dict], sources: dict[str, Source]) 
         listing.raw = row.get("raw_json")
     db.flush()
     return created, updated
+
+
+def _mark_delisted(
+    db: Session,
+    rows: list[dict],
+    crawled_sources: list[Source],
+    *,
+    operator_email: str,
+    operator_role: str,
+) -> list[Listing]:
+    """本轮采集成功、但源上已消失的挂牌 → 下架（软标记，重算时触发拆簇与结论失效）。
+
+    只检查本轮抓取成功的源：源失败时不能把它名下的挂牌误判成下架。
+    """
+    seen = {(row["source_code"], row["source_listing_no"]) for row in rows}
+    delisted: list[Listing] = []
+    for source in crawled_sources:
+        actives = db.scalars(
+            select(Listing).where(Listing.source_id == source.id, Listing.is_active.is_(True))
+        ).all()
+        for listing in actives:
+            if (source.code, listing.source_listing_no) in seen:
+                continue
+            listing.is_active = False
+            listing.removed_at = utcnow()
+            delisted.append(listing)
+            audit_service.record(
+                db,
+                actor_email=operator_email,
+                actor_role=operator_role,
+                action="listing.delisted",
+                entity="listing",
+                entity_id=listing.id,
+                detail={
+                    "source": source.code,
+                    "source_listing_no": listing.source_listing_no,
+                    "community": listing.community,
+                    "layout": listing.layout,
+                    "unit_price": listing.unit_price,
+                },
+            )
+    if delisted:
+        db.flush()
+    return delisted
 
 
 def _price_refresh_summary(db: Session) -> list[dict]:
@@ -104,6 +152,7 @@ def run_ingest(
     *,
     trigger: str = TriggerKind.MANUAL.value,
     operator_email: str = "system",
+    operator_role: str = "admin",
     source_ids: list[int] | None = None,
 ) -> IngestRun:
     started = time.time()
@@ -129,6 +178,7 @@ def run_ingest(
     platforms = fetch_service.load_platforms()
     source_map = {source.code: source for source in enabled}
     all_rows: list[dict] = []
+    crawled_sources: list[Source] = []
     pages = items = throttled = backoff = 0
     failures: list[str] = []
     throttle_log: list[dict] = []
@@ -152,12 +202,18 @@ def run_ingest(
             {"source": source.code, **entry} for entry in outcome["throttle_log"]
         )
         all_rows.extend(outcome["rows"])
+        crawled_sources.append(source)
         source.last_run_status = IngestStatus.SUCCESS.value
         source.last_run_at = utcnow()
         source.last_run_items = outcome["items_fetched"]
 
     created, updated = _upsert_listings(db, all_rows, source_map)
-    recomputed = cluster_service.recompute(db)
+    delisted = _mark_delisted(
+        db, all_rows, crawled_sources, operator_email=operator_email, operator_role=operator_role
+    )
+    recomputed = cluster_service.recompute(
+        db, actor_email=operator_email, actor_role=operator_role, trigger="ingest"
+    )
     blocks = _price_refresh_summary(db)
 
     run.pages_fetched = pages
@@ -181,6 +237,9 @@ def run_ingest(
         "pair_count": recomputed["pair_count"],
         "edge_count": recomputed["edge_count"],
         "unknown_area": sum(1 for row in all_rows if not row.get("area_sqm")),
+        "delisted": [listing.id for listing in delisted],
+        "flag_invalidated": recomputed["flag_invalidated"],
+        "cluster_events": recomputed["cluster_events"],
     }
     db.flush()
     logger.info(
@@ -232,6 +291,9 @@ def latest_run(db: Session) -> IngestRun | None:
 def pending_flags(db: Session) -> int:
     return len(
         db.scalars(
-            select(PriceFlag.id).where(PriceFlag.review_status == ReviewStatus.PENDING.value)
+            select(PriceFlag.id).where(
+                PriceFlag.review_status == ReviewStatus.PENDING.value,
+                PriceFlag.valid_state == "current",
+            )
         ).all()
     )

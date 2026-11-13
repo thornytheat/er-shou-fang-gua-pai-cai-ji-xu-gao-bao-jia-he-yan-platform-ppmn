@@ -31,6 +31,16 @@ def summary(
     return flag_controller.summary(db)
 
 
+@router.get("/history")
+def history(
+    limit: int = 20,
+    principal: dict = Depends(require_roles(*READ_ROLES)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """失效结论时间线：旧结论因何失效、失效前的复核人、当时的依据。"""
+    return flag_controller.list_invalidated(db, limit=limit)
+
+
 @router.post("/detect")
 def detect(
     request: Request,
